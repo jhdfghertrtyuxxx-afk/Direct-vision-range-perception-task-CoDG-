@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>直视范围感知任务 (CoDG Task)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background-color: #f3f4f6;
+            user-select: none; /* 防止选中文字影响实验 */
+        }
+        .canvas-container {
+            position: relative;
+            width: 400px;
+            height: 500px;
+            background-color: #e5e7eb; /* 灰色背景模拟实验室环境 */
+            margin: 0 auto;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .fixation {
+            font-size: 48px;
+            font-weight: bold;
+            color: #333;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        /* 隐藏元素类 */
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4">
+
+    <!-- 1. 指导语页面 -->
+    <div id="screen-instruction" class="max-w-2xl bg-white p-8 rounded-lg shadow-lg text-center">
+        <h1 class="text-3xl font-bold mb-4 text-blue-600">直视范围感知任务</h1>
+        <p class="text-gray-600 mb-6 text-left leading-relaxed">
+            欢迎参加本实验。<br><br>
+            在实验中，屏幕中央会呈现一张人脸。你需要判断：<br>
+            <strong class="text-lg text-black">"这个人是在看你吗？"</strong><br><br>
+            请凭直觉尽快做出反应。<br>
+            如果觉得对方在看你，请按键盘 <span class="bg-green-100 text-green-800 px-2 py-1 rounded font-bold">J</span> 键（是）。<br>
+            如果觉得对方没看你，请按键盘 <span class="bg-red-100 text-red-800 px-2 py-1 rounded font-bold">F</span> 键（否）。<br>
+            <br>
+            (手机用户请点击屏幕下方的按钮)
+        </p>
+        <button onclick="experiment.start()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded transition duration-200">
+            开始实验
+        </button>
+    </div>
+
+    <!-- 2. 实验进行页面 -->
+    <div id="screen-experiment" class="hidden flex flex-col items-center w-full max-w-2xl">
+        
+        <!-- 进度条 -->
+        <div class="w-full bg-gray-200 rounded-full h-2.5 mb-4">
+            <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+        </div>
+        <p class="text-sm text-gray-500 mb-2">试次: <span id="trial-counter">0/0</span></p>
+
+        <!-- 刺激呈现区域 -->
+        <div class="canvas-container bg-white relative">
+            <!-- 注视点 -->
+            <div id="fixation" class="fixation hidden">+</div>
+            <!-- 绘制人脸的 Canvas -->
+            <canvas id="stimulus-canvas" width="400" height="500" class="hidden"></canvas>
+        </div>
+
+        <!-- 移动端/鼠标响应按钮区域 -->
+        <div id="response-buttons" class="mt-8 flex gap-8 hidden">
+            <button onclick="experiment.handleResponse(false)" class="bg-red-500 hover:bg-red-600 text-white font-bold py-4 px-10 rounded shadow text-xl">
+                否 (F)
+            </button>
+            <button onclick="experiment.handleResponse(true)" class="bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-10 rounded shadow text-xl">
+                是 (J)
+            </button>
+        </div>
+
+        <p class="mt-4 text-gray-400 text-sm">请注视屏幕中央</p>
+    </div>
+
+    <!-- 3. 结果页面 -->
+    <div id="screen-result" class="hidden max-w-3xl w-full bg-white p-8 rounded-lg shadow-lg">
+        <h2 class="text-2xl font-bold mb-4 text-center">实验结果分析</h2>
+        
+        <div class="mb-6">
+            <canvas id="results-chart"></canvas>
+        </div>
+
+        <div class="bg-blue-50 p-4 rounded-lg">
+            <h3 class="font-bold text-blue-800 mb-2">你的直视锥 (Cone of Direct Gaze):</h3>
+            <p id="result-summary" class="text-gray-700">正在计算...</p>
+        </div>
+
+        <div class="mt-6 text-center">
+            <button onclick="location.reload()" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded">
+                重新测试
+            </button>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * 实验配置与逻辑控制
+         */
+        const experiment = {
+            // 实验参数
+            config: {
+                angles: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8], // 17个角度
+                repetitions: 2, // 每个角度重复次数 (总试次 = 17 * 2 = 34)
+                fixationDuration: 500, // 注视点呈现时间(ms)
+                interTrialInterval: 300 // 试次间隔(ms)
+            },
+            
+            // 运行时状态
+            trials: [],
+            currentTrialIndex: 0,
+            isAcceptingResponse: false,
+            responses: [], // 存储数据: {angle: number, response: boolean (true=是, false=否)}
+
+            // 初始化实验试次序列
+            init: function() {
+                // 生成试次列表
+                let trialList = [];
+                for (let i = 0; i < this.config.repetitions; i++) {
+                    trialList = trialList.concat(this.config.angles);
+                }
+                // 洗牌算法 (Fisher-Yates)
+                for (let i = trialList.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [trialList[i], trialList[j]] = [trialList[j], trialList[i]];
+                }
+                this.trials = trialList;
+                
+                // 绑定键盘事件
+                document.addEventListener('keydown', (e) => {
+                    if (!this.isAcceptingResponse) return;
+                    if (e.key.toLowerCase() === 'j') this.handleResponse(true);
+                    if (e.key.toLowerCase() === 'f') this.handleResponse(false);
+                });
+            },
+
+            // 开始实验流程
+            start: function() {
+                this.init();
+                document.getElementById('screen-instruction').classList.add('hidden');
+                document.getElementById('screen-experiment').classList.remove('hidden');
+                this.runTrial();
+            },
+
+            // 运行单个试次
+            runTrial: function() {
+                if (this.currentTrialIndex >= this.trials.length) {
+                    this.endExperiment();
+                    return;
+                }
+
+                // 更新UI
+                document.getElementById('trial-counter').innerText = `${this.currentTrialIndex + 1}/${this.trials.length}`;
+                document.getElementById('progress-bar').style.width = `${((this.currentTrialIndex) / this.trials.length) * 100}%`;
+                
+                const fixation = document.getElementById('fixation');
+                const canvas = document.getElementById('stimulus-canvas');
+                const btnContainer = document.getElementById('response-buttons');
+
+                // 1. 隐藏上一轮刺激，显示注视点
+                canvas.classList.add('hidden');
+                btnContainer.classList.add('hidden');
+                fixation.classList.remove('hidden');
+
+                // 2. 延迟后显示刺激
+                setTimeout(() => {
+                    fixation.classList.add('hidden');
+                    canvas.classList.remove('hidden');
+                    btnContainer.classList.remove('hidden');
+
+                    const angle = this.trials[this.currentTrialIndex];
+                    faceDrawer.draw(angle); // 绘制特定角度的人脸
+                    
+                    this.isAcceptingResponse = true;
+                    this.startTime = Date.now();
+
+                }, this.config.fixationDuration);
+            },
+
+            // 处理用户反应
+            handleResponse: function(isLooking) {
+                if (!this.isAcceptingResponse) return;
+
+                const rt = Date.now() - this.startTime;
+                const currentAngle = this.trials[this.currentTrialIndex];
+
+                // 记录数据
+                this.responses.push({
+                    angle: currentAngle,
+                    response: isLooking, // true = 觉得在看我, false = 没看我
+                    rt: rt
+                });
+
+                this.isAcceptingResponse = false;
+                this.currentTrialIndex++;
+
+                // 稍作停顿进入下一试次
+                setTimeout(() => {
+                    this.runTrial();
+                }, this.config.interTrialInterval);
+            },
+
+            // 实验结束，计算结果
+            endExperiment: function() {
+                document.getElementById('screen-experiment').classList.add('hidden');
+                document.getElementById('screen-result').classList.remove('hidden');
+                this.analyzeResults();
+            },
+
+            // 数据分析与图表
+            analyzeResults: function() {
+                // 汇总每个角度的 "是" 的比例
+                const analysis = {};
+                this.config.angles.forEach(angle => {
+                    analysis[angle] = { count: 0, yesCount: 0 };
+                });
+
+                this.responses.forEach(r => {
+                    analysis[r.angle].count++;
+                    if (r.response) analysis[r.angle].yesCount++;
+                });
+
+                const labels = this.config.angles;
+                const dataPoints = labels.map(angle => {
+                    return (analysis[angle].yesCount / analysis[angle].count) * 100;
+                });
+
+                // 简单的直视锥宽度估算 (计算 > 50% 响应的角度范围)
+                let leftBound = null;
+                let rightBound = null;
+                
+                // 简单的查找算法，寻找连续的 > 50% 区域
+                for (let i=0; i<labels.length; i++) {
+                    if (dataPoints[i] >= 50) {
+                        if (leftBound === null) leftBound = labels[i];
+                        rightBound = labels[i];
+                    }
+                }
+
+                let summaryText = "";
+                if (leftBound === null) {
+                    summaryText = "你似乎觉得这些面孔都没有在看你 (直视锥极窄)。";
+                } else {
+                    summaryText = `在角度 ${leftBound}° 到 ${rightBound}° 之间，你倾向于认为对方在看你。<br>你的直视锥宽度约为 ${rightBound - leftBound} 度。`;
+                }
+                
+                // 补充解释
+                if (rightBound - leftBound > 8) {
+                    summaryText += "<br><span class='text-yellow-600 mt-2 block'>你的直视锥较宽，这可能意味着你对他人的视线比较敏感。</span>";
+                } else {
+                    summaryText += "<br><span class='text-green-600 mt-2 block'>你的直视锥在正常范围内，辨别力较为精准。</span>";
+                }
+
+                document.getElementById('result-summary').innerHTML = summaryText;
+
+                // 绘制图表
+                const ctx = document.getElementById('results-chart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: '感觉 "他在看我" 的百分比 (%)',
+                            data: dataPoints,
+                            borderColor: 'rgb(59, 130, 246)',
+                            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                            tension: 0.3,
+                            fill: true,
+                            pointRadius: 5
+                        }]
+                    },
+                    options: {
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                max: 100,
+                                title: { display: true, text: '回答 "是" 的比例 (%)' }
+                            },
+                            x: {
+                                title: { display: true, text: '注视角度 (负数=向左看, 正数=向右看)' }
+                            }
+                        },
+                        plugins: {
+                            annotation: {
+                                annotations: {
+                                    line1: {
+                                        type: 'line',
+                                        yMin: 50,
+                                        yMax: 50,
+                                        borderColor: 'red',
+                                        borderWidth: 2,
+                                        borderDash: [5, 5],
+                                        label: { content: '50% 阈值', enabled: true }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        };
+
+        /**
+         * 面孔绘制引擎 (Canvas)
+         * 用于生成仿真的注视刺激
+         */
+        const faceDrawer = {
+            canvas: document.getElementById('stimulus-canvas'),
+            ctx: null,
+
+            draw: function(angle) {
+                this.ctx = this.canvas.getContext('2d');
+                const ctx = this.ctx;
+                const width = this.canvas.width;
+                const height = this.canvas.height;
+                const centerX = width / 2;
+                const centerY = height / 2;
+
+                // 清空画布
+                ctx.clearRect(0, 0, width, height);
+
+                // 1. 绘制脸部轮廓 (简单的椭圆模拟)
+                ctx.fillStyle = '#f3dcc7'; // 肤色
+                ctx.beginPath();
+                ctx.ellipse(centerX, centerY, 140, 180, 0, 0, 2 * Math.PI);
+                ctx.fill();
+                // 脸部阴影增加立体感
+                const grad = ctx.createRadialGradient(centerX - 40, centerY - 40, 50, centerX, centerY, 180);
+                grad.addColorStop(0, "rgba(255,255,255,0.2)");
+                grad.addColorStop(1, "rgba(0,0,0,0.1)");
+                ctx.fillStyle = grad;
+                ctx.fill();
+
+                // 2. 绘制眼睛参数
+                const eyeY = centerY - 20;
+                const leftEyeX = centerX - 50;
+                const rightEyeX = centerX + 50;
+                const eyeWidth = 36;  // 巩膜宽度的一半
+                const eyeHeight = 22; // 巩膜高度的一半
+
+                // 3. 计算瞳孔偏移量
+                // 假设：眼球半径约为12mm，屏幕呈现比例下，每1度视线偏转约为 0.6-0.8 像素的位移 (这是一个心理物理学的近似模拟)
+                // 这里的 factor 需要调整以确保 -8度看起来像是轻微偏移，而不是完全斜视
+                const pixelFactor = 1.5; 
+                const shiftX = angle * pixelFactor; 
+
+                // 绘制左眼
+                this.drawEye(ctx, leftEyeX, eyeY, eyeWidth, eyeHeight, shiftX);
+                // 绘制右眼
+                this.drawEye(ctx, rightEyeX, eyeY, eyeWidth, eyeHeight, shiftX);
+
+                // 4. 绘制鼻子 (简单线条)
+                ctx.strokeStyle = '#d6b69e';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(centerX, centerY);
+                ctx.lineTo(centerX - 5, centerY + 60);
+                ctx.lineTo(centerX + 5, centerY + 60);
+                ctx.stroke();
+
+                // 5. 绘制嘴巴 (中性表情)
+                ctx.beginPath();
+                ctx.moveTo(centerX - 30, centerY + 100);
+                ctx.quadraticCurveTo(centerX, centerY + 105, centerX + 30, centerY + 100);
+                ctx.stroke();
+            },
+
+            drawEye: function(ctx, x, y, w, h, pupilShiftX) {
+                // 巩膜 (眼白)
+                ctx.save();
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.ellipse(x, y, w, h, 0, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.strokeStyle = '#e0e0e0';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.clip(); // 裁剪，确保瞳孔不出眼眶
+
+                // 虹膜 (Iris)
+                const irisSize = 14;
+                ctx.fillStyle = '#5d4037'; // 棕色眼睛
+                ctx.beginPath();
+                ctx.arc(x + pupilShiftX, y, irisSize, 0, 2 * Math.PI);
+                ctx.fill();
+
+                // 瞳孔 (Pupil)
+                const pupilSize = 6;
+                ctx.fillStyle = '#000000';
+                ctx.beginPath();
+                ctx.arc(x + pupilShiftX, y, pupilSize, 0, 2 * Math.PI);
+                ctx.fill();
+
+                // 眼神高光 (Highlight) - 重要！增加真实感
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.beginPath();
+                ctx.arc(x + pupilShiftX - 4, y - 4, 3, 0, 2 * Math.PI);
+                ctx.fill();
+
+                ctx.restore();
+            }
+        };
+    </script>
+</body>
+</html>
