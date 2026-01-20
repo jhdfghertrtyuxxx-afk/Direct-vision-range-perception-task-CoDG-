@@ -22,8 +22,7 @@ Canvas 绘图：刺激材料（人脸及眼球运动）通过 Canvas 实时绘�
 
 访问本项目的 GitHub Pages 链接：
 
-[在此处填写你的 Pages 链接，例如: https://www.google.com/search?q=https://yourusername.github.io/codg-experiment/]
-
+https://jhdfghertrtyuxxx-afk.github.io/Direct-vision-range-perception-task-CoDG-/
 本地运行
 
 克隆或下载本项目。
